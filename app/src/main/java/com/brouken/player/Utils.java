@@ -639,19 +639,40 @@ class Utils {
         try {
             String scheme = subtitleUri.getScheme();
             if (scheme != null && scheme.toLowerCase().startsWith("http")) {
+                // For network URIs, delegate to SubtitleFetcher asynchronously
                 List<Uri> urls = new ArrayList<>();
                 urls.add(subtitleUri);
                 SubtitleFetcher subtitleFetcher = new SubtitleFetcher(activity, urls);
                 subtitleFetcher.start();
                 return null;
             } else {
-                InputStream inputStream = activity.getContentResolver().openInputStream(subtitleUri);
-                return convertInputStreamToUTF(activity, subtitleUri, inputStream);
+                // For local files, do conversion asynchronously as well
+                convertToUTFAsync(activity, subtitleUri);
+                return subtitleUri; // Return original URI immediately, conversion happens in background
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
         return subtitleUri;
+    }
+
+    /**
+     * Convert subtitle to UTF-8 asynchronously to avoid blocking UI
+     */
+    public static void convertToUTFAsync(PlayerActivity activity, Uri subtitleUri) {
+        new Thread(() -> {
+            try {
+                InputStream inputStream = activity.getContentResolver().openInputStream(subtitleUri);
+                Uri convertedUri = convertInputStreamToUTF(activity, subtitleUri, inputStream);
+                if (convertedUri != null && !convertedUri.equals(subtitleUri)) {
+                    // Update preferences with converted URI on UI thread
+                    activity.runOnUiThread(() -> activity.mPrefs.updateSubtitle(convertedUri));
+                }
+            } catch (Exception e) {
+                Utils.log("Failed to convert subtitle encoding: " + e.getMessage());
+                e.printStackTrace();
+            }
+        }).start();
     }
 
     public static Uri convertInputStreamToUTF(Context context, Uri subtitleUri, InputStream inputStream) {
@@ -843,7 +864,7 @@ class Utils {
         return frameRate;
     }
 
-    public static boolean switchFrameRate(final PlayerActivity activity, final Uri uri, final boolean play) {
+    public static boolean switchFrameRate(final PlayerActivity activity, final Format format, final boolean play) {
         // preferredDisplayModeId only available on SDK 23+
         // ExoPlayer already uses Surface.setFrameRate() on Android 11+
         if (Build.VERSION.SDK_INT >= 23) {
@@ -851,7 +872,8 @@ class Utils {
                 activity.frameRateSwitchThread.interrupt();
             }
             activity.frameRateSwitchThread = new Thread(() -> {
-                float frameRate = getFrameRate(activity, uri);
+                // Use frame rate directly from the format to avoid re-analyzing the file
+                float frameRate = (format != null && format.frameRate != Format.NO_VALUE) ? format.frameRate : 0;
                 Utils.handleFrameRate(activity, frameRate, play);
             });
             activity.frameRateSwitchThread.start();

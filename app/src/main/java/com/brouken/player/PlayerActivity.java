@@ -755,6 +755,13 @@ public class PlayerActivity extends Activity {
             playerView.removeCallbacks(barsHider);
         }
         playerView.setCustomErrorMessage(null);
+        
+        // Cancel any ongoing subtitle search to prevent memory leaks
+        if (subtitleFinder != null) {
+            subtitleFinder.cancel();
+            subtitleFinder = null;
+        }
+        
         releasePlayer(false);
     }
 
@@ -1167,10 +1174,10 @@ public class PlayerActivity extends Activity {
     }
 
     private void handleSubtitles(Uri uri) {
-        // Convert subtitles to UTF-8 if necessary
+        // Convert subtitles to UTF-8 if necessary - now async
         SubtitleUtils.clearCache(this);
-        uri = Utils.convertToUTF(this, uri);
         mPrefs.updateSubtitle(uri);
+        Utils.convertToUTF(this, uri); // This now happens asynchronously
     }
 
     public void initializePlayer() {
@@ -1218,9 +1225,7 @@ public class PlayerActivity extends Activity {
             );
         }
         // https://github.com/google/ExoPlayer/issues/8571
-        DefaultExtractorsFactory extractorsFactory = new DefaultExtractorsFactory()
-                .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ENABLE_HDMV_DTS_AUDIO_STREAMS)
-                .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE);
+        DefaultExtractorsFactory extractorsFactory = new DefaultExtractorsFactory();
         @SuppressLint("WrongConstant") RenderersFactory renderersFactory = new DefaultRenderersFactory(this)
                 .setExtensionRendererMode(mPrefs.decoderPriority)
                 .setMapDV7ToHevc(mPrefs.mapDV7ToHevc);
@@ -1290,82 +1295,70 @@ public class PlayerActivity extends Activity {
             }
             updatebuttonAspectRatioIcon();
 
-            MediaItem.Builder mediaItemBuilder = new MediaItem.Builder()
+            final MediaItem.Builder mediaItemBuilder = new MediaItem.Builder()
                     .setUri(mPrefs.mediaUri)
                     .setMimeType(mPrefs.mediaType);
-            String title;
-            if (apiTitle != null) {
-                title = apiTitle;
-            } else {
-                title = Utils.getFileName(PlayerActivity.this, mPrefs.mediaUri);
-            }
-            if (title != null) {
-                final MediaMetadata mediaMetadata = new MediaMetadata.Builder()
-                        .setTitle(title)
-                        .setDisplayTitle(title)
-                        .build();
-                mediaItemBuilder.setMediaMetadata(mediaMetadata);
-            }
-            if (apiAccess && apiSubs.size() > 0) {
-                mediaItemBuilder.setSubtitleConfigurations(apiSubs);
-            } else if (mPrefs.subtitleUri != null && Utils.fileExists(this, mPrefs.subtitleUri)) {
-                MediaItem.SubtitleConfiguration subtitle = SubtitleUtils.buildSubtitle(this, mPrefs.subtitleUri, null, true);
-                mediaItemBuilder.setSubtitleConfigurations(Collections.singletonList(subtitle));
-            }
+
+            // Fast fetch the file data and play immediately
             player.setMediaItem(mediaItemBuilder.build(), mPrefs.getPosition());
+            player.prepare();
 
-            try {
-                if (loudnessEnhancer != null) {
-                    loudnessEnhancer.release();
+            // Asynchronously set Title and Subtitles to avoid blocking the main thread
+            new Thread(() -> {
+                String title;
+                if (apiTitle != null) {
+                    title = apiTitle;
+                } else {
+                    title = Utils.getFileName(PlayerActivity.this, mPrefs.mediaUri);
                 }
-                loudnessEnhancer = new LoudnessEnhancer(player.getAudioSessionId());
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
 
-            notifyAudioSessionUpdate(true);
+                if (title != null) {
+                    final MediaMetadata mediaMetadata = new MediaMetadata.Builder()
+                            .setTitle(title)
+                            .setDisplayTitle(title)
+                            .build();
+                    mediaItemBuilder.setMediaMetadata(mediaMetadata);
+                    runOnUiThread(() -> titleView.setText(title));
+                }
 
+                List<MediaItem.SubtitleConfiguration> subtitleConfigurations = new ArrayList<>();
+                if (apiAccess && !apiSubs.isEmpty()) {
+                    subtitleConfigurations.addAll(apiSubs);
+                } else if (mPrefs.subtitleUri != null && Utils.fileExists(this, mPrefs.subtitleUri)) {
+                    MediaItem.SubtitleConfiguration subtitle = SubtitleUtils.buildSubtitle(this, mPrefs.subtitleUri, null, true);
+                    subtitleConfigurations.add(subtitle);
+                }
+
+                if (!subtitleConfigurations.isEmpty()) {
+                    mediaItemBuilder.setSubtitleConfigurations(subtitleConfigurations);
+                }
+
+                // Once metadata is ready, set the media item on the player
+                runOnUiThread(() -> {
+                    if (player != null) {
+                        player.setMediaItem(mediaItemBuilder.build(), mPrefs.getPosition());
+                    }
+                });
+            }).start();
+
+            // Set a placeholder title immediately
+            titleView.setText("Loading...");
+            titleView.setVisibility(View.VISIBLE);
+
+            // All player setup is now asynchronous, so we can proceed without blocking
             videoLoading = true;
-
             updateLoading(true);
+            updateButtons(true);
+            ((DoubleTapPlayerView)playerView).setDoubleTapEnabled(true);
+            player.setHandleAudioBecomingNoisy(!isTvBox);
+            player.addListener(playerListener);
 
             if (mPrefs.getPosition() == 0L || apiAccess || apiAccessPartial) {
                 play = true;
             }
-
-            if (apiTitle != null) {
-                titleView.setText(apiTitle);
-            } else {
-                titleView.setText(Utils.getFileName(this, mPrefs.mediaUri));
-            }
-            titleView.setVisibility(View.VISIBLE);
-
-            updateButtons(true);
-
-            ((DoubleTapPlayerView)playerView).setDoubleTapEnabled(true);
-
-            if (!apiAccess) {
-                if (nextUriThread != null) {
-                    nextUriThread.interrupt();
-                }
-                nextUri = null;
-                nextUriThread = new Thread(() -> {
-                    Uri uri = findNext();
-                    if (!Thread.currentThread().isInterrupted()) {
-                        nextUri = uri;
-                    }
-                });
-                nextUriThread.start();
-            }
-
-            player.setHandleAudioBecomingNoisy(!isTvBox);
-//            mediaSession.setActive(true);
         } else {
             playerView.showController();
         }
-
-        player.addListener(playerListener);
-        player.prepare();
 
         if (restorePlayState) {
             restorePlayState = false;
@@ -1439,6 +1432,21 @@ public class PlayerActivity extends Activity {
 
         @Override
         public void onIsPlayingChanged(boolean isPlaying) {
+            if (isPlaying && !apiAccess && nextUri == null && (nextUriThread == null || !nextUriThread.isAlive())) {
+                nextUriThread = new Thread(() -> {
+                    Uri uri = findNext();
+                    if (!Thread.currentThread().isInterrupted()) {
+                        nextUri = uri;
+                    }
+                });
+                nextUriThread.start();
+            }
+
+            // Start subtitle search
+            if (isPlaying && !apiAccess && mPrefs.subtitleUri == null) {
+                searchSubtitles();
+            }
+
             playerView.setKeepScreenOn(isPlaying);
 
             if (Utils.isPiPSupported(PlayerActivity.this)) {
@@ -1548,7 +1556,7 @@ public class PlayerActivity extends Activity {
                             }
                             displayManager.registerDisplayListener(displayListener, null);
                         }
-                        switched = Utils.switchFrameRate(PlayerActivity.this, mPrefs.mediaUri, play);
+                        switched = Utils.switchFrameRate(PlayerActivity.this, player.getVideoFormat(), play);
                     }
                     if (!switched) {
                         if (displayManager != null) {
@@ -1973,15 +1981,35 @@ public class PlayerActivity extends Activity {
         if (mPrefs.mediaUri == null)
             return;
 
+        // Start asynchronous subtitle search that won't block video loading
+        new Thread(() -> {
+            try {
+                searchSubtitlesAsync();
+            } catch (Exception e) {
+                // Log the exception
+                e.printStackTrace();
+            }
+        }).start();
+    }
+
+    private void searchSubtitlesAsync() {
         if (Utils.isSupportedNetworkUri(mPrefs.mediaUri) && Utils.isProgressiveContainerUri(mPrefs.mediaUri)) {
+            // Network-based subtitle search
             SubtitleUtils.clearCache(this);
             if (SubtitleFinder.isUriCompatible(mPrefs.mediaUri)) {
-                subtitleFinder = new SubtitleFinder(PlayerActivity.this, mPrefs.mediaUri);
-                subtitleFinder.start();
+                runOnUiThread(() -> {
+                    // Cancel any existing subtitle finder
+                    if (subtitleFinder != null) {
+                        subtitleFinder.cancel();
+                    }
+                    subtitleFinder = new SubtitleFinder(PlayerActivity.this, mPrefs.mediaUri);
+                    subtitleFinder.start();
+                });
             }
             return;
         }
 
+        // Local file-based subtitle search
         if (mPrefs.scopeUri != null || isTvBox) {
             DocumentFile video = null;
             File videoRaw = null;
@@ -2015,7 +2043,11 @@ public class PlayerActivity extends Activity {
                 }
 
                 if (subtitle != null) {
-                    handleSubtitles(subtitle.getUri());
+                    // Set subtitle immediately and convert encoding asynchronously
+                    SubtitleUtils.clearCache(this);
+                    final Uri subtitleUri = subtitle.getUri();
+                    runOnUiThread(() -> mPrefs.updateSubtitle(subtitleUri));
+                    Utils.convertToUTF(this, subtitleUri); // Convert asynchronously
                 }
             }
         }

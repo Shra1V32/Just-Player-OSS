@@ -15,6 +15,7 @@ public class SubtitleFinder {
     private Uri baseUri;
     private String path;
     private final List<Uri> urls;
+    private SubtitleFetcher subtitleFetcher;
 
     public SubtitleFinder(PlayerActivity activity, Uri uri) {
         this.activity = activity;
@@ -42,22 +43,60 @@ public class SubtitleFinder {
         return baseUri.buildUpon().path(newPath).build();
     }
 
+    /**
+     * Start asynchronous subtitle search - non-blocking
+     */
     public void start() {
         // Prevent IllegalArgumentException in okhttp3.Request.Builder
         if (HttpUrl.parse(baseUri.toString()) == null) {
             return;
         }
 
-        for (String suffix : new String[] { "srt", "ssa", "ass" }) {
-            urls.add(buildUri(suffix));
-            for (String language : Utils.getDeviceLanguages()) {
-                addLanguage(language, suffix);
-            }
-        }
-        urls.add(buildUri("vtt"));
-
-        SubtitleFetcher subtitleFetcher = new SubtitleFetcher(activity, urls);
+        // Build prioritized URL list
+        buildPrioritizedUrls();
+        
+        // Start asynchronous fetching
+        subtitleFetcher = new SubtitleFetcher(activity, urls);
         subtitleFetcher.start();
     }
 
+    /**
+     * Build URLs in a smarter order to reduce unnecessary requests
+     */
+    private void buildPrioritizedUrls() {
+        String[] deviceLanguages = Utils.getDeviceLanguages();
+        
+        // Priority 1: Device languages with SRT (most common)
+        for (String language : deviceLanguages) {
+            addLanguage(language, "srt");
+        }
+        
+        // Priority 2: Generic SRT
+        urls.add(buildUri("srt"));
+        
+        // Priority 3: Device languages with other formats
+        for (String language : deviceLanguages) {
+            addLanguage(language, "ssa");
+            addLanguage(language, "ass");
+        }
+        
+        // Priority 4: Generic other formats
+        urls.add(buildUri("ssa"));
+        urls.add(buildUri("ass"));
+        
+        // Priority 5: VTT (less common)
+        for (String language : deviceLanguages) {
+            addLanguage(language, "vtt");
+        }
+        urls.add(buildUri("vtt"));
+    }
+
+    /**
+     * Cancel any ongoing subtitle search
+     */
+    public void cancel() {
+        if (subtitleFetcher != null) {
+            subtitleFetcher.cancel();
+        }
+    }
 }
