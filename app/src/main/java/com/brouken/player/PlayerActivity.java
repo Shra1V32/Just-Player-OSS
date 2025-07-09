@@ -48,6 +48,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.view.accessibility.CaptioningManager;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
@@ -111,6 +112,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import android.view.Display;
 
 public class PlayerActivity extends Activity {
 
@@ -476,9 +478,6 @@ public class PlayerActivity extends Activity {
             return true;
         });
 
-        if (Build.VERSION.SDK_INT >= 35) {
-            getWindow().setNavigationBarContrastEnforced(false);
-        }
 
         controlView = playerView.findViewById(R.id.exo_controller);
         controlView.setOnApplyWindowInsetsListener((view, windowInsets) -> {
@@ -1490,6 +1489,24 @@ public class PlayerActivity extends Activity {
                 frameRendered = true;
 
                 if (videoLoading) {
+                    if (Build.VERSION.SDK_INT >= 35) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            final Display display = getWindowManager().getDefaultDisplay();
+                            // final float maxHdrSdrRatio = display.getHdrSdrRatio();
+                            // Utils.log("Max HDR/SDR Ratio: " + maxHdrSdrRatio);
+                            final Display.HdrCapabilities hdrCapabilities = display.getHdrCapabilities();
+                            if (hdrCapabilities != null) {
+                                final int[] supportedHdrTypes = hdrCapabilities.getSupportedHdrTypes();
+                                if (supportedHdrTypes.length > 0) {
+                                    getWindow().setColorMode(ActivityInfo.COLOR_MODE_HDR);
+                                    WindowManager.LayoutParams layout = getWindow().getAttributes();
+                                    layout.screenBrightness = 0.275f;
+                                    getWindow().setAttributes(layout);
+                                    getWindow().setNavigationBarContrastEnforced(false);
+                                }
+                            }
+                        }
+                    }
                     videoLoading = false;
 
                     if (mPrefs.orientation == Utils.Orientation.UNSPECIFIED) {
