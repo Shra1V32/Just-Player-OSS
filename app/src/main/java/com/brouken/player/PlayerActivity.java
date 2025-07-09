@@ -79,6 +79,7 @@ import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlaybackException;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.RenderersFactory;
 import androidx.media3.exoplayer.SeekParameters;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
@@ -1225,8 +1226,12 @@ public class PlayerActivity extends Activity {
                 .setExtensionRendererMode(mPrefs.decoderPriority)
                 .setMapDV7ToHevc(mPrefs.mapDV7ToHevc);
 
+        DefaultLoadControl.Builder loadControlBuilder = new DefaultLoadControl.Builder();
+        loadControlBuilder.setBackBuffer(20000, true);
+
         ExoPlayer.Builder playerBuilder = new ExoPlayer.Builder(this, renderersFactory)
                 .setTrackSelector(trackSelector)
+                .setLoadControl(loadControlBuilder.build())
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(this, extractorsFactory));
 
         if (haveMedia && isNetworkUri) {
