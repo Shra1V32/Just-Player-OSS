@@ -728,7 +728,9 @@ public class PlayerActivity extends Activity {
             playerView.removeCallbacks(barsHider);
             Utils.toggleSystemUi(this, playerView, true);
         }
-        initializePlayer();
+        if (player == null) {
+            initializePlayer();
+        }
         updateButtonRotation();
     }
 
@@ -749,13 +751,13 @@ public class PlayerActivity extends Activity {
 
     @Override
     public void onStop() {
+        player.pause();
         super.onStop();
         alive = false;
         if (Build.VERSION.SDK_INT >= 31) {
             playerView.removeCallbacks(barsHider);
         }
         playerView.setCustomErrorMessage(null);
-        releasePlayer(false);
     }
 
     @Override
@@ -1498,10 +1500,11 @@ public class PlayerActivity extends Activity {
                             if (hdrCapabilities != null) {
                                 final int[] supportedHdrTypes = hdrCapabilities.getSupportedHdrTypes();
                                 if (supportedHdrTypes.length > 0) {
-                                    getWindow().setColorMode(ActivityInfo.COLOR_MODE_HDR);
                                     WindowManager.LayoutParams layout = getWindow().getAttributes();
-                                    layout.screenBrightness = 0.275f;
+                                    layout.screenBrightness = 0.29848f;
                                     getWindow().setAttributes(layout);
+                                    getWindow().setColorMode(ActivityInfo.COLOR_MODE_HDR);
+                                    getWindow().setDesiredHdrHeadroom(6.0f);
                                     getWindow().setNavigationBarContrastEnforced(false);
                                 }
                             }
@@ -2338,5 +2341,11 @@ public class PlayerActivity extends Activity {
                 buttonRotation.setImageResource(R.drawable.ic_screen_landscape_24dp);
             }
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        releasePlayer(false);
     }
 }
